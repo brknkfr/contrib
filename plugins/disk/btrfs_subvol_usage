@@ -6,11 +6,11 @@ btrfs_subvol_usage - Plugin to monitor usage of BTRFS subvolumes
 
 =head1 CONFIGURATION
 
-Must be run as root and you have to specify the path to the filesystem
+Must be run as root and you have to specify the paths to the filesystems
 
- [btrfs_usage]
+ [btrfs_subvol_usage]
  user root
- env.fsroot /path/to/btrfs/filesystem
+ env.fsroot /path/to/btrfs/filesystem /path/to/another/btrfs/filesystem
 
 =head1 MAGIC MARKERS
 
@@ -47,52 +47,66 @@ my @fsroot;
 if ( !defined( $ENV{"fsroot"} ) ) {
 	die "No fsroot given! See the manual at top of this plugin file.";
 }
-@fsroot = $ENV{"fsroot"};
+@fsroot = split(' ', $ENV{"fsroot"});
+
+# variables
+my %subvols;
+my $fs;
+my $cleanfs;
 
 # get subvolumes
-my %subvols;
-open(SVS, "btrfs subvolume list --sort=path @fsroot |")
-	or die("Failed to run 'btrfs subvolume list': " . $!);
-while (my $line = <SVS>) {
-	chomp $line;
-	$line =~ s/ID ([0-9]+) gen ([0-9]+) top level ([0-9]+) path (.+)//;
-	$subvols{$1}->{id} = $1;
-	$subvols{$1}->{name} = $4;
+foreach $fs (@fsroot) {
+	open(SVS, "btrfs subvolume list --sort=path $fs |")
+		or die("Failed to run 'btrfs subvolume list': " . $!);
+	while (my $line = <SVS>) {
+		chomp $line;
+		$line =~ s/ID ([0-9]+) gen ([0-9]+) top level ([0-9]+) path (.+)//;
+		$subvols{$1}->{id} = $1;
+		$subvols{$1}->{name} = $4;
+	}
+	close SVS;
 }
-close SVS;
 
 # get sizes from quota
-open(QGS, "btrfs qgroup show --raw @fsroot |")
-	or die("Failed to run 'btrfs qgroup show': " . $!);
-while (my $line = <QGS>) {
-	chomp $line;
-	$line =~ s|([0-9]+)/([0-9]+)\s+([0-9]+)\s+([0-9]+)||;
-	if (defined($2) && defined($subvols{$2})) {
-		$subvols{$2}->{rfer} = $3;
-		$subvols{$2}->{excl} = $4;
+foreach $fs (@fsroot) {
+	open(QGS, "btrfs qgroup show --raw $fs |")
+		or die("Failed to run 'btrfs qgroup show': " . $!);
+	while (my $line = <QGS>) {
+		chomp $line;
+		$line =~ s|([0-9]+)/([0-9]+)\s+([0-9]+)\s+([0-9]+)||;
+		if (defined($2) && defined($subvols{$2})) {
+			$subvols{$2}->{rfer} = $3;
+			$subvols{$2}->{excl} = $4;
+		}
 	}
+	close QGS;
 }
-close QGS;
 
 # print config
-if ($ARGV[0] and $ARGV[0] eq 'config') {
-	print "btrfs_usage\n";
-	print "graph_title BTRFS Subvolume usage\n";
-	print "graph_args --base 1024 --lower-limit 0\n";
-	print "graph_vlabel Bytes\n";
-	print "graph_category disk\n";
+foreach $fs (@fsroot) {
+	$cleanfs = clean_fieldname($fs);
+	if ($ARGV[0] and $ARGV[0] eq 'config') {
+		print "btrfs_subvol_usage$cleanfs\n";
+		print "graph_title BTRFS Subvolume usage\n";
+		print "graph_args --base 1024 --lower-limit 0\n";
+		print "graph_vlabel Bytes\n";
+		print "graph_category disk\n";
 
-	for my $id (sort { $subvols{$a}->{name} cmp $subvols{$b}->{name} } keys %subvols) {
-		print "$id.label " . $subvols{$id}->{name} . "\n";
-		print "$id.type GAUGE\n";
-		print "$id.draw LINE2\n";
+		for my $id (sort { $subvols{$a}->{name} cmp $subvols{$b}->{name} } keys %subvols) {
+			print "$id.label " . $subvols{$id}->{name} . "\n";
+			print "$id.type GAUGE\n";
+			print "$id.draw LINE2\n";
+		}
+
+		exit 0;
 	}
-
-	exit 0;
 }
 
 # print usage
-print "btrfs_subvol_usage\n";
-for my $id (sort { $subvols{$a}->{name} cmp $subvols{$b}->{name} } keys %subvols) {
-	print "$id.value " . $subvols{$id}->{rfer} . "\n";
+foreach $fs (@fsroot) {
+	$cleanfs = clean_fieldname($fs);
+	print "btrfs_subvol_usage$cleanfs\n";
+	for my $id (sort { $subvols{$a}->{name} cmp $subvols{$b}->{name} } keys %subvols) {
+		print "$id.value " . $subvols{$id}->{rfer} . "\n";
+	}
 }
